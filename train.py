@@ -18,7 +18,7 @@ from scipy.spatial.distance import mahalanobis
 from scipy.ndimage import gaussian_filter
 from skimage import morphology
 from skimage.segmentation import mark_boundaries
-from utils import tf_embedding_concat_resize_method,tf_embedding_concat_patch_method,model_input_image
+from utils import tf_embedding_concat_resize_method,tf_embedding_concat_patch_method,model_input_image,draw_precision_recall,plot_fig
 from dataset import MvtecDataGenerator
 from args import get_args
 
@@ -57,7 +57,7 @@ mask_augmentation = tf.keras.Sequential(
 
 datagen = MvtecDataGenerator(dir_path=os.path.join(args.base_path,args.folder_path,'train'))
 test_datagen = MvtecDataGenerator(dir_path=os.path.join(args.base_path,args.folder_path,'test'),\
-	mask_path=os.path.join(args.base_path,args.folder_path,'ground_truth'))
+	mask_path=os.path.join(args.base_path,args.folder_path,'ground_truth'), batch_size=1)
 
 layer_outputs = {'layer1':[],'layer2':[],'layer3':[]}
 for i in range(len(datagen)):
@@ -119,15 +119,37 @@ fpr,tpr,_ = roc_curve(gt_list,img_scores)
 img_roc_auc = roc_auc_score(gt_list,img_scores)
 total_roc_auc.append(img_roc_auc)
 precision,recall,thresholds = precision_recall_curve(masks.astype(np.uint8).flatten(),scores.flatten())
+print('#')
+print(np.max(scores))
+print(np.min(scores))
+print(np.shape(scores))
+
+test_imgs = []
+test_msks = []
+for i in range(len(test_datagen)):
+  test_imgs.append(test_datagen[i][0])
+  test_msks.append(test_datagen[i][1])
+test_imgs = np.asarray(test_imgs)
+test_msks = np.asarray(test_msks)
+  
 a = 2*precision*recall
 b = precision + recall
 f1 = np.divide(a,b,out=np.zeros_like(a),where=b!=0)
+base_line = np.sum(masks.flatten()) / len(masks.flatten())
+draw_precision_recall(precision, recall, base_line, 'PR1.png')
 threshold = thresholds[np.argmax(f1)]
 fpr,tpr,_ = roc_curve(masks.astype(np.uint8).flatten(),scores.flatten())
 per_pixel_rocauc = roc_auc_score(masks.astype(np.uint8).flatten(), scores.flatten())
 print(args.folder_path,'image ROCAUC: %.3f' %(img_roc_auc),'pixel ROCAUC: %.3f' %(per_pixel_rocauc))
 
+gt_mask = test_msks.astype(np.uint8)
 
+print('#')
+print(np.shape(test_imgs))
+print(np.shape(scores))
+print(np.shape(gt_mask))
+    
+plot_fig(test_imgs, tf.squeeze(scores).numpy(), gt_mask, threshold, 'res', 'bootle')
 
 
 
