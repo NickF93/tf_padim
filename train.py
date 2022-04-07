@@ -22,74 +22,112 @@ from utils import tf_embedding_concat_resize_method,tf_embedding_concat_patch_me
 from dataset import MvtecDataGenerator
 from args import get_args
 
+#region [Memory Growth]
+print(tf.__version__)
+
+tf.keras.backend.clear_session()
+
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+  try:
+    # Currently, memory growth needs to be the same across GPUs
+    for gpu in gpus:
+      tf.config.experimental.set_memory_growth(gpu, True)
+    logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+    print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
+  except RuntimeError as e:
+    # Memory growth must be set before GPUs have been initialized
+    print(e)
+#endregion [Memory Growth]
+
 random.seed(1024)
 np.random.seed(1024)
 tf.random.set_seed(1024)
 args = get_args()
 
 if args.device == 'cpu':
-	config = tf.ConfigProto(
+  config = tf.ConfigProto(
         device_count = {'GPU': 0}
-   	 )
-	sess = tf.Session(config=config)
-	
+      )
+  sess = tf.Session(config=config)
+  
 if args.model == 'resnet18':
-	Resnet18,preprocess_input = Classifiers.get('resnet18')
-	model = Resnet18(tuple(args.center_size),weights='imagenet')
-	output_layers = ['stage2_unit1_bn1','stage3_unit1_bn1','stage4_unit1_bn1']
-	outputs = [model.get_layer(i).output for i in output_layers]
-	new_model = Model(inputs=model.inputs,outputs=outputs)
+  Resnet18,preprocess_input = Classifiers.get('resnet18')
+  model = Resnet18(tuple(args.center_size),weights='imagenet')
+  output_layers = ['stage2_unit1_bn1','stage3_unit1_bn1','stage4_unit1_bn1']
+  outputs = [model.get_layer(i).output for i in output_layers]
+  new_model = Model(inputs=model.inputs,outputs=outputs)
 
 elif args.model == 'resnet50':
-	model = tf.keras.applications.ResNet50(include_top=False,weights="imagenet",input_shape=tuple(args.center_size))
-	output_layers = ['conv2_block3_3_bn','conv2_block3_3_bn','conv4_block6_3_bn']
-	outputs = [model.get_layer(i).output for i in output_layers]
-	new_model = Model(inputs=model.inputs,outputs=outputs)
-	preprocess_input = tf.keras.applications.resnet.preprocess_input
+  model = tf.keras.applications.ResNet50(include_top=False,weights="imagenet",input_shape=tuple(args.center_size))
+  output_layers = ['conv2_block3_3_bn','conv2_block3_3_bn','conv4_block6_3_bn']
+  outputs = [model.get_layer(i).output for i in output_layers]
+  new_model = Model(inputs=model.inputs,outputs=outputs)
+  preprocess_input = tf.keras.applications.resnet.preprocess_input
 
 data_augmentation= tf.keras.Sequential(
-	[Resizing(*args.image_size[:2]),\
-	 CenterCrop(*args.center_size[:2]),\
-	 tf.keras.layers.Lambda(preprocess_input)])
+  [Resizing(*args.image_size[:2]),\
+   CenterCrop(*args.center_size[:2]),\
+   tf.keras.layers.Lambda(preprocess_input)])
 mask_augmentation = tf.keras.Sequential(
-	[Resizing(*args.image_size[:2]),\
-	 CenterCrop(*args.center_size[:2])])
+  [Resizing(*args.image_size[:2]),\
+   CenterCrop(*args.center_size[:2])])
 
 datagen = MvtecDataGenerator(dir_path=os.path.join(args.base_path,args.folder_path,'train'))
 test_datagen = MvtecDataGenerator(dir_path=os.path.join(args.base_path,args.folder_path,'test'),\
-	mask_path=os.path.join(args.base_path,args.folder_path,'ground_truth'), batch_size=1)
+  mask_path=os.path.join(args.base_path,args.folder_path,'ground_truth'), batch_size=1)
+
+model_outputs = new_model.outputs
+max_mem_size = 0
+for o in model_outputs:
+  print(o.name, ':', o.shape)
+  max_mem_size += o.shape[-1]
+print('max_mem_size =', max_mem_size)
 
 layer_outputs = {'layer1':[],'layer2':[],'layer3':[]}
 for i in range(len(datagen)):
-	x,_ = datagen[i]
-	x_aug = data_augmentation(np.array(x))
-	img_outputs = new_model.predict(x_aug)
-	for k,v in zip(layer_outputs.keys(),img_outputs):
-		layer_outputs[k].extend(v)
+  x,_ = datagen[i]
+  x_aug = data_augmentation(np.array(x))
+  img_outputs = new_model.predict(x_aug)
+  for k,v in zip(layer_outputs.keys(),img_outputs):
+    print(np.shape(np.asarray(v)))
+    layer_outputs[k].extend(v)
+    print('#')
+
+print()
+print('###')
+print()
+
+print(np.shape(np.asarray(layer_outputs['layer1'])))
+print(np.shape(np.asarray(layer_outputs['layer2'])))
+print(np.shape(np.asarray(layer_outputs['layer3'])))
 
 conc1 = tf_embedding_concat_resize_method(np.asarray(layer_outputs['layer1']), np.asarray(layer_outputs['layer2']))
 conc2 = tf_embedding_concat_resize_method(conc1, np.asarray(layer_outputs['layer3']))
+print(np.shape(np.asarray(conc2)))
 idx = random.sample(range(0,conc2.shape[-1]), args.dim)
 embedding_vec = tf.gather(conc2,indices=idx,axis=-1)
 del conc1,conc2,layer_outputs
+print(np.shape(np.asarray(embedding_vec)))
+print('+')
 b,h,w,c = embedding_vec.shape
 embedding_vec = tf.reshape(embedding_vec,(b,h*w,c))
 mean = tf.reduce_mean(embedding_vec,axis=0)
 cov = np.zeros(shape=(c,c,h*w))
 I = np.identity(c)
 for i in range(h*w):
-	cov[:,:,i] = np.cov(embedding_vec[:,i,:],rowvar=False) + 0.01*I
+  cov[:,:,i] = np.cov(embedding_vec[:,i,:],rowvar=False) + 0.01*I
 cov_inv = np.linalg.inv(cov.T).T
 train_outputs = [mean,cov_inv]
 layer_outputs = {'layer1':[],'layer2':[],'layer3':[]}
 masks = []
 for i in range(len(test_datagen)):
-	x,y = test_datagen[i]
-	masks.extend(mask_augmentation(np.array(y)).numpy())
-	x_aug = data_augmentation(np.array(x))
-	img_outputs = new_model.predict(x_aug)
-	for k,v in zip(layer_outputs.keys(),img_outputs):
-		layer_outputs[k].extend(v)
+  x,y = test_datagen[i]
+  masks.extend(mask_augmentation(np.array(y)).numpy())
+  x_aug = data_augmentation(np.array(x))
+  img_outputs = new_model.predict(x_aug)
+  for k,v in zip(layer_outputs.keys(),img_outputs):
+    layer_outputs[k].extend(v)
 conc1 = tf_embedding_concat_resize_method(np.asarray(layer_outputs['layer1']), np.asarray(layer_outputs['layer2']))
 conc2 = tf_embedding_concat_resize_method(conc1, np.asarray(layer_outputs['layer3']))
 embedding_vec = tf.gather(conc2,indices=idx,axis=-1)
@@ -106,7 +144,7 @@ dist_list = np.expand_dims(dist_list, axis=-1)
 score_map = tf.image.resize(dist_list, size=(args.center_size[0],args.center_size[1]))
 score_map = score_map.numpy()
 for i in range(score_map.shape[0]):
-	score_map[i] = gaussian_filter(score_map[i], sigma=4)
+  score_map[i] = gaussian_filter(score_map[i], sigma=4)
 max_score = score_map.max()
 min_score = score_map.min()
 scores = (score_map -min_score)/(max_score-min_score)
